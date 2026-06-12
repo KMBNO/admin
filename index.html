@@ -343,8 +343,8 @@ async function loadFile(file) {
 
     if (isPDF) {
       await renderPDF(ev.target.result);
-      const text = await extractPDFText(b64);
-      await analyze({ type: "text", content: text });
+      const images = await pdfToImages(b64);
+      await analyze({ type: "images", images });
     } else {
       renderImage(ev.target.result);
       await analyze({ type: "image", b64, mime: file.type });
@@ -382,18 +382,25 @@ async function changePage(dir) {
   await renderPage(currentPage);
 }
 
-async function extractPDFText(b64) {
+async function pdfToImages(b64) {
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
-  let fullText = "";
-  for (let i = 1; i <= pdf.numPages; i++) {
+  const maxPages = Math.min(pdf.numPages, 6);
+  const images = [];
+  const offscreen = document.createElement("canvas");
+  for (let i = 1; i <= maxPages; i++) {
     const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    fullText += content.items.map(item => item.str).join(" ") + "\n";
+    const viewport = page.getViewport({ scale: 2.0 });
+    offscreen.width = viewport.width;
+    offscreen.height = viewport.height;
+    const ctx = offscreen.getContext("2d");
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    const dataUrl = offscreen.toDataURL("image/jpeg", 0.85);
+    images.push(dataUrl.split(",")[1]);
   }
-  return fullText.trim();
+  return images;
 }
 
 /* ---- Image rendering ---- */
@@ -428,16 +435,12 @@ Do zrobienia: [lista max 3 punktów co trzeba zrobić, np. zapłacić X zł, ode
 Bądź konkretna. Nie używaj języka formalnego.`;
 }
 
-async function analyze({ type, content, b64, mime }) {
+async function analyze({ type, content, b64, mime, images }) {
   let messages;
-  if (type === "text") {
-    if (!content || content.length < 20) {
-      document.getElementById("analysis-loader").classList.add("hidden");
-      document.getElementById("analysis-error").classList.remove("hidden");
-      document.getElementById("analysis-error").textContent = "Nie udało się odczytać tekstu z PDF — spróbuj wgrać jako JPG lub PNG (zrzut ekranu).";
-      return;
-    }
-    messages = [{ role: "user", content: `Przeanalizuj to pismo:\n\n${content}` }];
+  if (type === "images") {
+    const parts = [{ type: "text", text: "Przeanalizuj to pismo (może być kilka stron):" }];
+    images.forEach(img => parts.push({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${img}`, detail: "high" } }));
+    messages = [{ role: "user", content: parts }];
   } else {
     messages = [{ role: "user", content: [
       { type: "text", text: "Przeanalizuj to pismo:" },
